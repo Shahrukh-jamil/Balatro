@@ -24,17 +24,15 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Auto-Flatten and Repack game.love Root
         run: |
-          sudo apt-get update && sudo apt-get install -y zip unzip
-          
-          # 1. Unzip the uploaded game.love
+          # 1. Unzip with -o (force overwrite duplicate entries without prompting)
           mkdir -p /tmp/game_raw
-          unzip -q game.love -d /tmp/game_raw
+          unzip -q -o game.love -d /tmp/game_raw
 
-          # 2. Find the exact folder containing main.lua
+          # 2. Locate where main.lua is sitting
           MAIN_PATH=$(find /tmp/game_raw -name "main.lua" | head -n 1)
           if [ -z "$MAIN_PATH" ]; then
             echo "ERROR: main.lua could not be found anywhere inside game.love!"
@@ -43,7 +41,7 @@ jobs:
           MAIN_DIR=$(dirname "$MAIN_PATH")
           echo "==> Found main.lua inside: $MAIN_DIR"
 
-          # 3. Disable the joystick module in conf.lua (prevents mobile SDL crash)
+          # 3. Disable the joystick module in conf.lua to prevent mobile SDL crash
           if [ -f "$MAIN_DIR/conf.lua" ]; then
             sed -i 's/function love.conf(t)/function love.conf(t)\n\tt.modules.joystick = false/' "$MAIN_DIR/conf.lua"
           fi
