@@ -26,33 +26,42 @@ jobs:
         with:
           node-version: 20
 
-      - name: Auto-Flatten and Repack game.love Root
+      - name: Auto-Flatten and Patch game.love Root
         run: |
-          # 1. Unzip with -o (force overwrite duplicate entries without prompting)
+          # 1. Unpack game.love with overwrite flag
           mkdir -p /tmp/game_raw
           unzip -q -o game.love -d /tmp/game_raw
 
-          # 2. Locate where main.lua is sitting
+          # 2. Locate main.lua
           MAIN_PATH=$(find /tmp/game_raw -name "main.lua" | head -n 1)
           if [ -z "$MAIN_PATH" ]; then
-            echo "ERROR: main.lua could not be found anywhere inside game.love!"
+            echo "ERROR: main.lua not found!"
             exit 1
           fi
           MAIN_DIR=$(dirname "$MAIN_PATH")
           echo "==> Found main.lua inside: $MAIN_DIR"
 
-          # 3. Disable the joystick module in conf.lua to prevent mobile SDL crash
+          # 3. Disable joystick in conf.lua (prevents mobile browser SDL crash)
           if [ -f "$MAIN_DIR/conf.lua" ]; then
             sed -i 's/function love.conf(t)/function love.conf(t)\n\tt.modules.joystick = false/' "$MAIN_DIR/conf.lua"
           fi
 
-          # 4. Repack game.love directly from MAIN_DIR so main.lua is at the root
+          # 4. Neutralize 'require "bit"' with a safe stub for WebAssembly
+          python3 -c "
+          p = '$MAIN_PATH'
+          with open(p, 'r', encoding='utf-8', errors='ignore') as f:
+              c = f.read()
+          # Replace require 'bit' with a safe fallback table
+          stub = 'bit = {bxor=function(a,b) return 0 end, band=function(a,b) return 0 end, bor=function(a,b) return 0 end, lshift=function(a,b) return a*(2^b) end, rshift=function(a,b) return math.floor(a/(2^b)) end}; package.loaded[\"bit\"] = bit;'
+          c = c.replace('require \"bit\"', stub).replace(\"require 'bit'\", stub)
+          with open(p, 'w', encoding='utf-8') as f:
+              f.write(c)
+          print('==> Successfully replaced require bit with web stub')
+          "
+
+          # 5. Repack game.love cleanly with main.lua at the root
           rm -f game.love
           (cd "$MAIN_DIR" && zip -r -q "$GITHUB_WORKSPACE/game.love" .)
-
-          # 5. Print archive root to verify
-          echo "==> Verified game.love root contents:"
-          unzip -l "$GITHUB_WORKSPACE/game.love" | head -n 15
 
       - name: Compile with love.js
         run: |
