@@ -28,7 +28,7 @@ jobs:
 
       - name: Auto-Flatten and Patch game.love Root
         run: |
-          # 1. Unpack game.love
+          # 1. Unpack game.love with overwrite flag
           mkdir -p /tmp/game_raw
           unzip -q -o game.love -d /tmp/game_raw
 
@@ -73,7 +73,7 @@ jobs:
               with open(globals_file, 'w', encoding='utf-8') as f:
                   f.write(g)
 
-          # Fix hologram.fs loop
+          # Fix hologram.fs loop for WebGL
           holo_file = os.path.join(main_dir, 'resources/shaders/hologram.fs')
           if os.path.exists(holo_file):
               with open(holo_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -94,8 +94,9 @@ jobs:
               if not h.endswith('\n'): h += '\n'
               with open(holo_file, 'w', encoding='utf-8') as f:
                   f.write(h)
+              print('==> Patched hologram.fs loop for WebGL')
 
-          # Fix CRT.fs loop
+          # Fix CRT.fs loop for WebGL
           crt_file = os.path.join(main_dir, 'resources/shaders/CRT.fs')
           if os.path.exists(crt_file):
               with open(crt_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -116,9 +117,10 @@ jobs:
               if not crt.endswith('\n'): crt += '\n'
               with open(crt_file, 'w', encoding='utf-8') as f:
                   f.write(crt)
+              print('==> Patched CRT.fs loop for WebGL')
           "
 
-          # 5. Repack game.love
+          # 5. Repack game.love cleanly with main.lua at the root
           rm -f game.love
           (cd "$MAIN_DIR" && zip -r -q "$GITHUB_WORKSPACE/game.love" .)
 
@@ -127,133 +129,11 @@ jobs:
           npm install -g love.js
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
-          # 6. Inject HTML with working engine loader, progress bar, and fullscreen
-          cat << 'EOF' > dist/index.html
-          <!doctype html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-            <title>Balatro</title>
-            <style>
-              * { box-sizing: border-box; margin: 0; padding: 0; }
-              body, html { width: 100%; height: 100%; overflow: hidden; background: #0e0e10; font-family: monospace; color: #fff; }
-              #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
-              canvas#canvas { width: 100%; height: 100%; object-fit: contain; }
-              
-              #loader {
-                position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                display: flex; flex-direction: column; align-items: center; gap: 12px;
-                z-index: 50; width: 85%; max-width: 320px;
-              }
-              .title { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
-              progress {
-                width: 100%; height: 16px; border-radius: 8px; overflow: hidden;
-                border: 1px solid #444; background: #222; accent-color: #fd5f55;
-              }
-              #status-text { font-size: 12px; color: #aaa; text-align: center; }
-              
-              #fs-btn, #log-btn {
-                position: fixed; bottom: 12px; background: rgba(30,30,30,0.85);
-                color: #fff; border: 1px solid #666; padding: 8px 14px;
-                font-size: 11px; border-radius: 6px; z-index: 100; cursor: pointer;
-              }
-              #fs-btn { right: 12px; }
-              #log-btn { left: 12px; }
-              
-              #error-box {
-                display: none; position: fixed; top: 0; left: 0; width: 100%;
-                max-height: 60%; background: rgba(15, 15, 15, 0.95);
-                border-bottom: 2px solid #fd5f55; padding: 12px; font-size: 11px;
-                overflow-y: auto; z-index: 1000; white-space: pre-wrap; color: #ff8b8b;
-              }
-            </style>
-          </head>
-          <body>
-            <div id="loader">
-              <div class="title">BALATRO</div>
-              <progress id="progress" value="0" max="100"></progress>
-              <div id="status-text">Loading engine...</div>
-            </div>
+          # 6. Apply mobile viewport & responsive canvas styling to love.js index.html
+          sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><style>body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}canvas#canvas{width:100vw!important;height:100vh!important;object-fit:contain}<\/style>/' dist/index.html
 
-            <div id="error-box"></div>
-
-            <div id="canvas-container">
-              <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
-            </div>
-
-            <button id="log-btn" onclick="toggleLogs()">Logs</button>
-            <button id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
-
-            <script>
-              var statusText = document.getElementById('status-text');
-              var progressBar = document.getElementById('progress');
-              var loader = document.getElementById('loader');
-              var errorBox = document.getElementById('error-box');
-
-              function logMsg(prefix, text) {
-                errorBox.textContent += prefix + " " + text + "\n";
-              }
-              function toggleLogs() {
-                errorBox.style.display = (errorBox.style.display === 'block') ? 'none' : 'block';
-              }
-              function toggleFullscreen() {
-                var el = document.documentElement;
-                var rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
-                var efs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
-                if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-                  if (rfs) rfs.call(el).catch(function(){});
-                } else {
-                  if (efs) efs.call(document).catch(function(){});
-                }
-              }
-
-              window.onerror = function(msg, url, line) {
-                errorBox.style.display = 'block';
-                logMsg("[CRASH]", msg + " (line " + line + ")");
-              };
-
-              var Module = {
-                arguments: ["./game.love"],
-                INITIAL_MEMORY: 134217728,
-                print: function(text) {
-                  console.log(text);
-                  logMsg("[OUT]", text);
-                },
-                printErr: function(text) {
-                  console.error(text);
-                  logMsg("[ERR]", text);
-                  if (text.indexOf("warning") === -1 && text.indexOf("INFO") === -1) {
-                    errorBox.style.display = 'block';
-                  }
-                },
-                canvas: document.getElementById('canvas'),
-                setStatus: function(text) {
-                  if (!text || text === "Running...") {
-                    loader.style.display = 'none';
-                    return;
-                  }
-                  statusText.textContent = text;
-                  var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
-                  if (m) {
-                    var current = parseInt(m[2]);
-                    var total = parseInt(m[4]);
-                    progressBar.value = current;
-                    progressBar.max = total;
-                    var curMB = (current / 1048576).toFixed(1);
-                    var totMB = (total / 1048576).toFixed(1);
-                    statusText.textContent = "Downloading assets: " + curMB + " MB / " + totMB + " MB";
-                  }
-                }
-              };
-            </script>
-            <!-- 1. Load data package -->
-            <script src="game.js"></script>
-            <!-- 2. Load Love2D WebAssembly engine -->
-            <script async src="love.js"></script>
-          </body>
-          </html>
-          EOF
+          # 7. Inject Mobile Console (Eruda) + Global Error Catcher Alert Banner
+          sed -i 's/<head>/<head><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();window.addEventListener("error",function(e){var m=e.message||e.filename||"Unknown error";alert("ERROR DETECTED: "+m);console.error(e);},true);<\/script>/' dist/index.html
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
