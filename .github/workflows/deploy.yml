@@ -40,19 +40,20 @@ jobs:
           fi
           MAIN_DIR=$(dirname "$MAIN_PATH")
           echo "==> Found main.lua inside: $MAIN_DIR"
+          export MAIN_DIR
 
           # 3. Disable joystick in conf.lua
           if [ -f "$MAIN_DIR/conf.lua" ]; then
             sed -i 's/function love.conf(t)/function love.conf(t)\n\tt.modules.joystick = false/' "$MAIN_DIR/conf.lua"
           fi
 
-          # 4. Patch require 'bit', skip splash, and fix WebGL shaders
+          # 4. Apply all code, shader, and startup fixes via Python
           python3 -c "
           import os, re
 
-          main_dir = '$MAIN_DIR'
+          main_dir = os.environ['MAIN_DIR']
 
-          # Fix 'bit' module
+          # Fix 'bit' module in main.lua
           main_file = os.path.join(main_dir, 'main.lua')
           if os.path.exists(main_file):
               with open(main_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -61,19 +62,19 @@ jobs:
               c = c.replace('require \"bit\"', stub).replace(\"require 'bit'\", stub)
               with open(main_file, 'w', encoding='utf-8') as f:
                   f.write(c)
+              print('==> Patched main.lua: bit module')
 
-          # Skip the 15-second vortex splash to boot straight to the game menu
-          globals_file = os.path.join(main_dir, 'globals.lua')
-          if os.path.exists(globals_file):
-              with open(globals_file, 'r', encoding='utf-8', errors='ignore') as f:
+          # Skip 15s vortex splash in game.lua
+          game_file = os.path.join(main_dir, 'game.lua')
+          if os.path.exists(game_file):
+              with open(game_file, 'r', encoding='utf-8', errors='ignore') as f:
                   g = f.read()
-              g = g.replace(\"skip_splash = 'No'\", \"skip_splash = 'Yes'\")
-              if 'skip_splash' not in g:
-                  g = g.replace('self.SETTINGS = {', 'self.SETTINGS = {\\n        skip_splash = \"Yes\",')
-              with open(globals_file, 'w', encoding='utf-8') as f:
+              g = g.replace('function Game:start_up()', 'function Game:start_up()\\n    self.SETTINGS.skip_splash = \"Yes\"')
+              with open(game_file, 'w', encoding='utf-8') as f:
                   f.write(g)
+              print('==> Patched game.lua: skip_splash')
 
-          # Fix hologram.fs loop for WebGL
+          # Fix hologram.fs WebGL loop index and missing newline
           holo_file = os.path.join(main_dir, 'resources/shaders/hologram.fs')
           if os.path.exists(holo_file):
               with open(holo_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -94,9 +95,9 @@ jobs:
               if not h.endswith('\n'): h += '\n'
               with open(holo_file, 'w', encoding='utf-8') as f:
                   f.write(h)
-              print('==> Patched hologram.fs loop for WebGL')
+              print('==> Patched hologram.fs: WebGL constant loop')
 
-          # Fix CRT.fs loop for WebGL
+          # Fix CRT.fs WebGL loop index
           crt_file = os.path.join(main_dir, 'resources/shaders/CRT.fs')
           if os.path.exists(crt_file):
               with open(crt_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -117,10 +118,21 @@ jobs:
               if not crt.endswith('\n'): crt += '\n'
               with open(crt_file, 'w', encoding='utf-8') as f:
                   f.write(crt)
-              print('==> Patched CRT.fs loop for WebGL')
+              print('==> Patched CRT.fs: WebGL constant loop')
+
+          # Fix vortex.fs smoothstep
+          vort_file = os.path.join(main_dir, 'resources/shaders/vortex.fs')
+          if os.path.exists(vort_file):
+              with open(vort_file, 'r', encoding='utf-8', errors='ignore') as f:
+                  v = f.read()
+              v = v.replace('smoothstep(effectRadius, 0., len)', '(1.0 - smoothstep(0., effectRadius, len))')
+              if not v.endswith('\n'): v += '\n'
+              with open(vort_file, 'w', encoding='utf-8') as f:
+                  f.write(v)
+              print('==> Patched vortex.fs: smoothstep')
           "
 
-          # 5. Repack game.love cleanly with main.lua at the root
+          # 5. Repack game.love cleanly with main.lua at root
           rm -f game.love
           (cd "$MAIN_DIR" && zip -r -q "$GITHUB_WORKSPACE/game.love" .)
 
@@ -129,11 +141,14 @@ jobs:
           npm install -g love.js
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
-          # 6. Apply mobile viewport & responsive canvas styling to love.js index.html
-          sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><style>body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}canvas#canvas{width:100vw!important;height:100vh!important;object-fit:contain}<\/style>/' dist/index.html
+          # 6. Inject Mobile Viewport, Eruda, and Fail-Safe On-Screen Error Box
+          sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">/' dist/index.html
 
-          # 7. Inject Mobile Console (Eruda) + Global Error Catcher Alert Banner
-          sed -i 's/<head>/<head><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();window.addEventListener("error",function(e){var m=e.message||e.filename||"Unknown error";alert("ERROR DETECTED: "+m);console.error(e);},true);<\/script>/' dist/index.html
+          # Inject guaranteed on-screen error banner and console
+          sed -i 's/<head>/<head><script>window.addEventListener("error",function(e){var b=document.getElementById("debug-err-box");if(!b){b=document.createElement("pre");b.id="debug-err-box";b.style.cssText="position:fixed;top:0;left:0;width:100%;max-height:50%;background:rgba(200,0,0,0.95);color:#fff;font-size:11px;z-index:999999;padding:10px;overflow:auto;white-space:pre-wrap;margin:0;";document.body.appendChild(b);}b.textContent+=(e.message||e)+"\\n"+(e.filename||"")+":"+(e.lineno||"")+"\\n";});<\/script><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();<\/script>/' dist/index.html
+
+          # Fix mobile fullscreen button
+          sed -i 's/function goFullScreen.*/function goFullScreen() { var c = document.getElementById("canvas"); if (c.requestFullscreen) { c.requestFullscreen(); } else if (c.webkitRequestFullscreen) { c.webkitRequestFullscreen(); } }/' dist/index.html
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
