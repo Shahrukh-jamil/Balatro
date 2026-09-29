@@ -28,7 +28,7 @@ jobs:
 
       - name: Auto-Flatten and Patch game.love Root
         run: |
-          # 1. Unpack game.love with overwrite flag
+          # 1. Unpack game.love
           mkdir -p /tmp/game_raw
           unzip -q -o game.love -d /tmp/game_raw
 
@@ -46,7 +46,7 @@ jobs:
             sed -i 's/function love.conf(t)/function love.conf(t)\n\tt.modules.joystick = false/' "$MAIN_DIR/conf.lua"
           fi
 
-          # 4. Patch require 'bit' and WebGL Shaders (hologram.fs and CRT.fs)
+          # 4. Patch require 'bit', skip splash, and fix WebGL shaders
           python3 -c "
           import os, re
 
@@ -62,7 +62,18 @@ jobs:
               with open(main_file, 'w', encoding='utf-8') as f:
                   f.write(c)
 
-          # Fix hologram.fs non-constant loop and missing newline
+          # Skip the 15-second vortex splash to boot straight to the game menu
+          globals_file = os.path.join(main_dir, 'globals.lua')
+          if os.path.exists(globals_file):
+              with open(globals_file, 'r', encoding='utf-8', errors='ignore') as f:
+                  g = f.read()
+              g = g.replace(\"skip_splash = 'No'\", \"skip_splash = 'Yes'\")
+              if 'skip_splash' not in g:
+                  g = g.replace('self.SETTINGS = {', 'self.SETTINGS = {\\n        skip_splash = \"Yes\",')
+              with open(globals_file, 'w', encoding='utf-8') as f:
+                  f.write(g)
+
+          # Fix hologram.fs loop
           holo_file = os.path.join(main_dir, 'resources/shaders/hologram.fs')
           if os.path.exists(holo_file):
               with open(holo_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -83,9 +94,8 @@ jobs:
               if not h.endswith('\n'): h += '\n'
               with open(holo_file, 'w', encoding='utf-8') as f:
                   f.write(h)
-              print('==> Patched hologram.fs loop for WebGL')
 
-          # Fix CRT.fs loop for WebGL
+          # Fix CRT.fs loop
           crt_file = os.path.join(main_dir, 'resources/shaders/CRT.fs')
           if os.path.exists(crt_file):
               with open(crt_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -106,10 +116,9 @@ jobs:
               if not crt.endswith('\n'): crt += '\n'
               with open(crt_file, 'w', encoding='utf-8') as f:
                   f.write(crt)
-              print('==> Patched CRT.fs loop for WebGL')
           "
 
-          # 5. Repack game.love cleanly with main.lua at the root
+          # 5. Repack game.love
           rm -f game.love
           (cd "$MAIN_DIR" && zip -r -q "$GITHUB_WORKSPACE/game.love" .)
 
@@ -118,11 +127,79 @@ jobs:
           npm install -g love.js
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
-          # Mobile viewport scaling
-          sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">/' dist/index.html
+          # 6. Inject modern full-screen mobile runner with inline console
+          cat << 'EOF' > dist/index.html
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <title>Balatro</title>
+            <style>
+              * { box-sizing: border-box; margin: 0; padding: 0; }
+              body, html { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: monospace; }
+              #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+              canvas#canvas { width: 100%; height: 100%; object-fit: contain; }
+              #loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 16px; text-align: center; pointer-events: none; z-index: 10; }
+              #fs-btn { position: fixed; bottom: 12px; right: 12px; background: rgba(255,255,255,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.4); padding: 8px 12px; font-size: 12px; border-radius: 4px; z-index: 100; cursor: pointer; }
+              #console-btn { position: fixed; bottom: 12px; left: 12px; background: rgba(255,255,255,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.4); padding: 8px 12px; font-size: 12px; border-radius: 4px; z-index: 100; cursor: pointer; }
+              #error-box { display: none; position: fixed; top: 0; left: 0; width: 100%; max-height: 50%; background: rgba(180, 0, 0, 0.9); color: #fff; padding: 12px; font-size: 11px; overflow-y: auto; z-index: 1000; white-space: pre-wrap; }
+            </style>
+          </head>
+          <body>
+            <div id="loading">Loading Balatro...</div>
+            <div id="error-box"></div>
+            <div id="canvas-container">
+              <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+            </div>
+            <button id="console-btn" onclick="toggleLogs()">Show Logs</button>
+            <button id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
 
-          # Bust browser IndexedDB cache & inject DevTools console
-          sed -i 's/<head>/<head><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();if(window.indexedDB){indexedDB.deleteDatabase("\/home\/web_user\/love");}<\/script>/' dist/index.html
+            <script>
+              var logs = [];
+              function showErr(msg) {
+                var eb = document.getElementById('error-box');
+                eb.style.display = 'block';
+                eb.textContent += msg + '\n';
+              }
+              function toggleLogs() {
+                var eb = document.getElementById('error-box');
+                eb.style.display = (eb.style.display === 'block') ? 'none' : 'block';
+              }
+              function toggleFullscreen() {
+                if (!document.fullscreenElement) {
+                  document.documentElement.requestFullscreen().catch(function(){});
+                } else {
+                  document.exitFullscreen().catch(function(){});
+                }
+              }
+              window.onerror = function(msg, url, line) {
+                showErr("Error: " + msg + " (line " + line + ")");
+              };
+
+              var Module = {
+                arguments: ["./game.love"],
+                INITIAL_MEMORY: 134217728,
+                print: function(text) { console.log(text); },
+                printErr: function(text) {
+                  console.error(text);
+                  if (text.indexOf("warning") === -1) showErr(text);
+                },
+                canvas: document.getElementById('canvas'),
+                setStatus: function(text) {
+                  var el = document.getElementById('loading');
+                  if (!text) {
+                    el.style.display = 'none';
+                  } else {
+                    el.textContent = text;
+                  }
+                }
+              };
+            </script>
+            <script async src="game.js"></script>
+          </body>
+          </html>
+          EOF
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
