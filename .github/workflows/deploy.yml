@@ -28,7 +28,7 @@ jobs:
 
       - name: Auto-Flatten and Patch game.love Root
         run: |
-          # 1. Unpack game.love
+          # 1. Unpack game.love with overwrite flag
           mkdir -p /tmp/game_raw
           unzip -q -o game.love -d /tmp/game_raw
 
@@ -42,39 +42,99 @@ jobs:
           echo "==> Found main.lua inside: $MAIN_DIR"
           export MAIN_DIR
 
-          # 3. Disable joystick in conf.lua
+          # 3. Disable joystick in conf.lua (prevents mobile browser SDL crash)
           if [ -f "$MAIN_DIR/conf.lua" ]; then
             sed -i 's/function love.conf(t)/function love.conf(t)\n\tt.modules.joystick = false/' "$MAIN_DIR/conf.lua"
           fi
 
-          # 4. Patch require 'bit', skip splash, and fix WebGL shaders
+          # 4. Apply all critical engine, CPU spinlock, and shader fixes
           python3 -c "
           import os, re
 
           main_dir = os.environ['MAIN_DIR']
 
-          # Fix 'bit' module in main.lua
+          # Fix A: Disable love.timer.sleep spinlock on Web & stub bit module (Stops 100% CPU freeze)
           main_file = os.path.join(main_dir, 'main.lua')
           if os.path.exists(main_file):
               with open(main_file, 'r', encoding='utf-8', errors='ignore') as f:
-                  c = f.read()
+                  m = f.read()
+              
+              # Neutralize require 'bit'
               stub = 'bit = {bxor=function(a,b) return 0 end, band=function(a,b) return 0 end, bor=function(a,b) return 0 end, lshift=function(a,b) return a*(2^b) end, rshift=function(a,b) return math.floor(a/(2^b)) end}; package.loaded[\"bit\"] = bit;'
-              c = c.replace('require \"bit\"', stub).replace(\"require 'bit'\", stub)
-              with open(main_file, 'w', encoding='utf-8') as f:
-                  f.write(c)
-              print('==> Patched main.lua: bit module')
+              m = m.replace('require \"bit\"', stub).replace(\"require 'bit'\", stub)
 
-          # Skip 15s vortex splash in game.lua
+              # Kill love.timer.sleep spinlock on Web
+              sleep_override = '''
+if love.system.getOS() == 'Web' or not love.system.getOS then
+    if love.timer then love.timer.sleep = function() end end
+end
+'''
+              m = sleep_override + '\n' + m
+              with open(main_file, 'w', encoding='utf-8') as f:
+                  f.write(m)
+              print('==> Patched main.lua: bit module & sleep spinlock')
+
+          # Fix B: Bypass async thread deadlock in game.lua
           game_file = os.path.join(main_dir, 'game.lua')
           if os.path.exists(game_file):
               with open(game_file, 'r', encoding='utf-8', errors='ignore') as f:
                   g = f.read()
+              
+              # Force synchronous file loading so the engine never waits on background threads
+              load_file_target = '''function Game:load_file(_file)
+    G.LOAD_HANDLER = G.LOAD_HANDLER or {}
+
+    if G.LOAD_HANDLER.LOCAL_FILES and G.LOAD_HANDLER.LOCAL_FILES[_file] then
+        G.FILES[_file] = load_local_file(_file)
+        G.LOAD_HANDLER.FILE_STATUS[_file]._status = G.FILES[_file] and 'OK' or 'NOT FOUND'
+    else
+        G.LOAD_MANAGER.request_channel:push({
+            type = 'load_request',
+            file = _file
+          })
+        G.LOAD_HANDLER.loading = true
+    end
+end'''
+              load_file_clean = '''function Game:load_file(_file)
+    G.LOAD_HANDLER = G.LOAD_HANDLER or {}
+    G.FILES[_file] = load_local_file(_file)
+    G.LOAD_HANDLER.FILE_STATUS[_file]._status = G.FILES[_file] and 'OK' or 'NOT FOUND'
+end'''
+              g = g.replace(load_file_target, load_file_clean)
+
+              # Disable thread initialization on Web
+              g = g.replace('G.LOAD_MANAGER.thread:start(2)', 'if love.system.getOS() ~= \"Web\" then G.LOAD_MANAGER.thread:start(2) end')
+              g = g.replace('G.SAVE_MANAGER.thread:start(2)', 'if love.system.getOS() ~= \"Web\" then G.SAVE_MANAGER.thread:start(2) end')
+
+              # Skip 15s vortex splash
               g = g.replace('function Game:start_up()', 'function Game:start_up()\\n    self.SETTINGS.skip_splash = \"Yes\"')
+
+              # Safe font fallback
+              font_search = '''        for _, v in ipairs(self.FONTS) do
+            if love.filesystem.getInfo(v.file) then 
+                v.FONT = love.graphics.newFont( v.file, v.render_scale)
+            end
+        end
+        for _, v in pairs(self.LANGUAGES) do
+            v.font = self.FONTS[v.font]
+        end'''
+              font_replace = '''        for _, v in ipairs(self.FONTS) do
+            if love.filesystem.getInfo(v.file) then 
+                v.FONT = love.graphics.newFont( v.file, v.render_scale)
+            else
+                v.FONT = (self.FONTS[1] and self.FONTS[1].FONT) or love.graphics.newFont(\"resources/fonts/m6x11plus.ttf\", v.render_scale)
+            end
+        end
+        for _, v in pairs(self.LANGUAGES) do
+            v.font = self.FONTS[v.font] or self.FONTS[1]
+        end'''
+              g = g.replace(font_search, font_replace)
+
               with open(game_file, 'w', encoding='utf-8') as f:
                   f.write(g)
-              print('==> Patched game.lua: skip_splash')
+              print('==> Patched game.lua: load_file, threads, and fonts')
 
-          # Fix hologram.fs WebGL loop index and missing newline
+          # Fix C: WebGL loop indices in hologram.fs
           holo_file = os.path.join(main_dir, 'resources/shaders/hologram.fs')
           if os.path.exists(holo_file):
               with open(holo_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -97,7 +157,7 @@ jobs:
                   f.write(h)
               print('==> Patched hologram.fs: WebGL constant loop')
 
-          # Fix CRT.fs WebGL loop index
+          # Fix D: WebGL loop indices in CRT.fs
           crt_file = os.path.join(main_dir, 'resources/shaders/CRT.fs')
           if os.path.exists(crt_file):
               with open(crt_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -120,7 +180,7 @@ jobs:
                   f.write(crt)
               print('==> Patched CRT.fs: WebGL constant loop')
 
-          # Fix vortex.fs smoothstep
+          # Fix E: vortex.fs smoothstep
           vort_file = os.path.join(main_dir, 'resources/shaders/vortex.fs')
           if os.path.exists(vort_file):
               with open(vort_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -132,7 +192,7 @@ jobs:
               print('==> Patched vortex.fs: smoothstep')
           "
 
-          # 5. Repack game.love cleanly with main.lua at root
+          # 5. Repack game.love
           rm -f game.love
           (cd "$MAIN_DIR" && zip -r -q "$GITHUB_WORKSPACE/game.love" .)
 
@@ -141,7 +201,7 @@ jobs:
           npm install -g love.js
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
-          # 6. Inject Mobile Viewport, Eruda, and Error Monitor safely without touching inline functions
+          # 6. Inject Mobile Viewport, Eruda, and Error Monitor safely
           sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">/' dist/index.html
           sed -i 's/<head>/<head><script>window.addEventListener("error",function(e){var b=document.getElementById("debug-err-box");if(!b){b=document.createElement("pre");b.id="debug-err-box";b.style.cssText="position:fixed;top:0;left:0;width:100%;max-height:50%;background:rgba(200,0,0,0.95);color:#fff;font-size:11px;z-index:999999;padding:10px;overflow:auto;white-space:pre-wrap;margin:0;";document.body.appendChild(b);}b.textContent+=(e.message||e)+"\\n"+(e.filename||"")+":"+(e.lineno||"")+"\\n";});<\/script><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();<\/script>/' dist/index.html
 
