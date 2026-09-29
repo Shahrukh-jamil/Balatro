@@ -28,7 +28,7 @@ jobs:
 
       - name: Auto-Flatten and Patch game.love Root
         run: |
-          # 1. Unpack game.love with overwrite flag
+          # 1. Unpack game.love
           mkdir -p /tmp/game_raw
           unzip -q -o game.love -d /tmp/game_raw
 
@@ -47,7 +47,7 @@ jobs:
             sed -i 's/function love.conf(t)/function love.conf(t)\n\tt.modules.joystick = false/' "$MAIN_DIR/conf.lua"
           fi
 
-          # 4. Apply all code, shader, and startup fixes via Python
+          # 4. Patch require 'bit', skip splash, and fix WebGL shaders
           python3 -c "
           import os, re
 
@@ -141,14 +141,9 @@ jobs:
           npm install -g love.js
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
-          # 6. Inject Mobile Viewport, Eruda, and Fail-Safe On-Screen Error Box
+          # 6. Inject Mobile Viewport, Eruda, and Error Monitor safely without touching inline functions
           sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">/' dist/index.html
-
-          # Inject guaranteed on-screen error banner and console
           sed -i 's/<head>/<head><script>window.addEventListener("error",function(e){var b=document.getElementById("debug-err-box");if(!b){b=document.createElement("pre");b.id="debug-err-box";b.style.cssText="position:fixed;top:0;left:0;width:100%;max-height:50%;background:rgba(200,0,0,0.95);color:#fff;font-size:11px;z-index:999999;padding:10px;overflow:auto;white-space:pre-wrap;margin:0;";document.body.appendChild(b);}b.textContent+=(e.message||e)+"\\n"+(e.filename||"")+":"+(e.lineno||"")+"\\n";});<\/script><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();<\/script>/' dist/index.html
-
-          # Fix mobile fullscreen button
-          sed -i 's/function goFullScreen.*/function goFullScreen() { var c = document.getElementById("canvas"); if (c.requestFullscreen) { c.requestFullscreen(); } else if (c.webkitRequestFullscreen) { c.webkitRequestFullscreen(); } }/' dist/index.html
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
