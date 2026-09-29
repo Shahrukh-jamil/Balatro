@@ -26,17 +26,46 @@ jobs:
         with:
           node-version: 18
 
-      - name: Compile Love2D to WebAssembly
+      - name: Auto-Flatten and Repack game.love Root
+        run: |
+          sudo apt-get update && sudo apt-get install -y zip unzip
+          
+          # 1. Unzip the uploaded game.love
+          mkdir -p /tmp/game_raw
+          unzip -q game.love -d /tmp/game_raw
+
+          # 2. Find the exact folder containing main.lua
+          MAIN_PATH=$(find /tmp/game_raw -name "main.lua" | head -n 1)
+          if [ -z "$MAIN_PATH" ]; then
+            echo "ERROR: main.lua could not be found anywhere inside game.love!"
+            exit 1
+          fi
+          MAIN_DIR=$(dirname "$MAIN_PATH")
+          echo "==> Found main.lua inside: $MAIN_DIR"
+
+          # 3. Disable the joystick module in conf.lua (prevents mobile SDL crash)
+          if [ -f "$MAIN_DIR/conf.lua" ]; then
+            sed -i 's/function love.conf(t)/function love.conf(t)\n\tt.modules.joystick = false/' "$MAIN_DIR/conf.lua"
+          fi
+
+          # 4. Repack game.love directly from MAIN_DIR so main.lua is at the root
+          rm -f game.love
+          (cd "$MAIN_DIR" && zip -r -q "$GITHUB_WORKSPACE/game.love" .)
+
+          # 5. Print archive root to verify
+          echo "==> Verified game.love root contents:"
+          unzip -l "$GITHUB_WORKSPACE/game.love" | head -n 15
+
+      - name: Compile with love.js
         run: |
           npm install -g love.js
-          # Compile in compatibility mode
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
           # Mobile viewport scaling
           sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">/' dist/index.html
 
-          # Inject mobile DevTools console (Eruda) and on-screen error banner
-          sed -i 's/<head>/<head><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();window.onerror=function(msg,url,line){alert("CRASH: " + msg + "\\nLine: " + line);};<\/script>/' dist/index.html
+          # Mobile DevTools console + cache buster to clear stale game.data
+          sed -i 's/<head>/<head><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();if(window.indexedDB){indexedDB.deleteDatabase("\/home\/web_user\/love");}<\/script>/' dist/index.html
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
