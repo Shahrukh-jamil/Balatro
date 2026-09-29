@@ -127,7 +127,7 @@ jobs:
           npm install -g love.js
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
-          # 6. Inject modern full-screen mobile runner with inline console
+          # 6. Inject responsive mobile runner with progress bar and cache-clearer
           cat << 'EOF' > dist/index.html
           <!doctype html>
           <html lang="en">
@@ -137,34 +137,72 @@ jobs:
             <title>Balatro</title>
             <style>
               * { box-sizing: border-box; margin: 0; padding: 0; }
-              body, html { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: monospace; }
+              body, html { width: 100%; height: 100%; overflow: hidden; background: #0e0e10; font-family: monospace; color: #fff; }
               #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
               canvas#canvas { width: 100%; height: 100%; object-fit: contain; }
-              #loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 16px; text-align: center; pointer-events: none; z-index: 10; }
-              #fs-btn { position: fixed; bottom: 12px; right: 12px; background: rgba(255,255,255,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.4); padding: 8px 12px; font-size: 12px; border-radius: 4px; z-index: 100; cursor: pointer; }
-              #console-btn { position: fixed; bottom: 12px; left: 12px; background: rgba(255,255,255,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.4); padding: 8px 12px; font-size: 12px; border-radius: 4px; z-index: 100; cursor: pointer; }
-              #error-box { display: none; position: fixed; top: 0; left: 0; width: 100%; max-height: 50%; background: rgba(180, 0, 0, 0.9); color: #fff; padding: 12px; font-size: 11px; overflow-y: auto; z-index: 1000; white-space: pre-wrap; }
+              
+              #loader {
+                position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                display: flex; flex-direction: column; align-items: center; gap: 12px;
+                z-index: 50; width: 85%; max-width: 320px;
+              }
+              .title { font-size: 20px; font-weight: bold; letter-spacing: 2px; }
+              progress {
+                width: 100%; height: 16px; border-radius: 8px; overflow: hidden;
+                border: 1px solid #444; background: #222; accent-color: #fd5f55;
+              }
+              #status-text { font-size: 12px; color: #aaa; text-align: center; }
+              
+              #fs-btn, #log-btn {
+                position: fixed; bottom: 12px; background: rgba(30,30,30,0.8);
+                color: #fff; border: 1px solid #555; padding: 8px 14px;
+                font-size: 11px; border-radius: 6px; z-index: 100;
+              }
+              #fs-btn { right: 12px; }
+              #log-btn { left: 12px; }
+              
+              #error-box {
+                display: none; position: fixed; top: 0; left: 0; width: 100%;
+                max-height: 60%; background: rgba(15, 15, 15, 0.95);
+                border-bottom: 2px solid #fd5f55; padding: 12px; font-size: 11px;
+                overflow-y: auto; z-index: 1000; white-space: pre-wrap; color: #ff8b8b;
+              }
             </style>
           </head>
           <body>
-            <div id="loading">Loading Balatro...</div>
+            <div id="loader">
+              <div class="title">BALATRO</div>
+              <progress id="progress" value="0" max="100"></progress>
+              <div id="status-text">Connecting...</div>
+            </div>
+
             <div id="error-box"></div>
+
             <div id="canvas-container">
               <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
             </div>
-            <button id="console-btn" onclick="toggleLogs()">Show Logs</button>
+
+            <button id="log-btn" onclick="toggleLogs()">Logs</button>
             <button id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
 
             <script>
-              var logs = [];
-              function showErr(msg) {
-                var eb = document.getElementById('error-box');
-                eb.style.display = 'block';
-                eb.textContent += msg + '\n';
+              // 1. Unregister any stale service workers from earlier
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations().then(function(regs) {
+                  for (var r of regs) { r.unregister(); }
+                });
+              }
+
+              var statusText = document.getElementById('status-text');
+              var progressBar = document.getElementById('progress');
+              var loader = document.getElementById('loader');
+              var errorBox = document.getElementById('error-box');
+
+              function logMsg(prefix, text) {
+                errorBox.textContent += prefix + " " + text + "\n";
               }
               function toggleLogs() {
-                var eb = document.getElementById('error-box');
-                eb.style.display = (eb.style.display === 'block') ? 'none' : 'block';
+                errorBox.style.display = (errorBox.style.display === 'block') ? 'none' : 'block';
               }
               function toggleFullscreen() {
                 if (!document.fullscreenElement) {
@@ -173,25 +211,42 @@ jobs:
                   document.exitFullscreen().catch(function(){});
                 }
               }
+
               window.onerror = function(msg, url, line) {
-                showErr("Error: " + msg + " (line " + line + ")");
+                errorBox.style.display = 'block';
+                logMsg("[CRASH]", msg + " (line " + line + ")");
               };
 
               var Module = {
                 arguments: ["./game.love"],
                 INITIAL_MEMORY: 134217728,
-                print: function(text) { console.log(text); },
+                print: function(text) {
+                  console.log(text);
+                  logMsg("[OUT]", text);
+                },
                 printErr: function(text) {
                   console.error(text);
-                  if (text.indexOf("warning") === -1) showErr(text);
+                  logMsg("[ERR]", text);
+                  if (text.indexOf("warning") === -1 && text.indexOf("INFO") === -1) {
+                    errorBox.style.display = 'block';
+                  }
                 },
                 canvas: document.getElementById('canvas'),
                 setStatus: function(text) {
-                  var el = document.getElementById('loading');
                   if (!text) {
-                    el.style.display = 'none';
-                  } else {
-                    el.textContent = text;
+                    loader.style.display = 'none';
+                    return;
+                  }
+                  statusText.textContent = text;
+                  var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+                  if (m) {
+                    var current = parseInt(m[2]);
+                    var total = parseInt(m[4]);
+                    progressBar.value = current;
+                    progressBar.max = total;
+                    var curMB = (current / 1048576).toFixed(1);
+                    var totMB = (total / 1048576).toFixed(1);
+                    statusText.textContent = "Downloading game assets: " + curMB + " MB / " + totMB + " MB";
                   }
                 }
               };
