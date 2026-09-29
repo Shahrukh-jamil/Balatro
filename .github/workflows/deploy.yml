@@ -127,7 +127,7 @@ jobs:
           npm install -g love.js
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
-          # 6. Inject responsive mobile runner with progress bar and cache-clearer
+          # 6. Inject HTML with working engine loader, progress bar, and fullscreen
           cat << 'EOF' > dist/index.html
           <!doctype html>
           <html lang="en">
@@ -146,7 +146,7 @@ jobs:
                 display: flex; flex-direction: column; align-items: center; gap: 12px;
                 z-index: 50; width: 85%; max-width: 320px;
               }
-              .title { font-size: 20px; font-weight: bold; letter-spacing: 2px; }
+              .title { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
               progress {
                 width: 100%; height: 16px; border-radius: 8px; overflow: hidden;
                 border: 1px solid #444; background: #222; accent-color: #fd5f55;
@@ -154,9 +154,9 @@ jobs:
               #status-text { font-size: 12px; color: #aaa; text-align: center; }
               
               #fs-btn, #log-btn {
-                position: fixed; bottom: 12px; background: rgba(30,30,30,0.8);
-                color: #fff; border: 1px solid #555; padding: 8px 14px;
-                font-size: 11px; border-radius: 6px; z-index: 100;
+                position: fixed; bottom: 12px; background: rgba(30,30,30,0.85);
+                color: #fff; border: 1px solid #666; padding: 8px 14px;
+                font-size: 11px; border-radius: 6px; z-index: 100; cursor: pointer;
               }
               #fs-btn { right: 12px; }
               #log-btn { left: 12px; }
@@ -173,7 +173,7 @@ jobs:
             <div id="loader">
               <div class="title">BALATRO</div>
               <progress id="progress" value="0" max="100"></progress>
-              <div id="status-text">Connecting...</div>
+              <div id="status-text">Loading engine...</div>
             </div>
 
             <div id="error-box"></div>
@@ -186,13 +186,6 @@ jobs:
             <button id="fs-btn" onclick="toggleFullscreen()">Fullscreen</button>
 
             <script>
-              // 1. Unregister any stale service workers from earlier
-              if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.getRegistrations().then(function(regs) {
-                  for (var r of regs) { r.unregister(); }
-                });
-              }
-
               var statusText = document.getElementById('status-text');
               var progressBar = document.getElementById('progress');
               var loader = document.getElementById('loader');
@@ -205,10 +198,13 @@ jobs:
                 errorBox.style.display = (errorBox.style.display === 'block') ? 'none' : 'block';
               }
               function toggleFullscreen() {
-                if (!document.fullscreenElement) {
-                  document.documentElement.requestFullscreen().catch(function(){});
+                var el = document.documentElement;
+                var rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+                var efs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+                if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                  if (rfs) rfs.call(el).catch(function(){});
                 } else {
-                  document.exitFullscreen().catch(function(){});
+                  if (efs) efs.call(document).catch(function(){});
                 }
               }
 
@@ -233,7 +229,7 @@ jobs:
                 },
                 canvas: document.getElementById('canvas'),
                 setStatus: function(text) {
-                  if (!text) {
+                  if (!text || text === "Running...") {
                     loader.style.display = 'none';
                     return;
                   }
@@ -246,12 +242,15 @@ jobs:
                     progressBar.max = total;
                     var curMB = (current / 1048576).toFixed(1);
                     var totMB = (total / 1048576).toFixed(1);
-                    statusText.textContent = "Downloading game assets: " + curMB + " MB / " + totMB + " MB";
+                    statusText.textContent = "Downloading assets: " + curMB + " MB / " + totMB + " MB";
                   }
                 }
               };
             </script>
-            <script async src="game.js"></script>
+            <!-- 1. Load data package -->
+            <script src="game.js"></script>
+            <!-- 2. Load Love2D WebAssembly engine -->
+            <script async src="love.js"></script>
           </body>
           </html>
           EOF
