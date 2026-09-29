@@ -29,15 +29,14 @@ jobs:
       - name: Compile Love2D to WebAssembly
         run: |
           npm install -g love.js
-          # Allocate 128MB heap (-m 134217728) in compatibility mode (-c)
+          # Compile in compatibility mode
           love.js -t "Balatro" -m 134217728 -c game.love dist
 
-          # Inject mobile viewport so the game scales cleanly on phone screens
+          # Mobile viewport scaling
           sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">/' dist/index.html
 
-          # Service worker for caching & offline support
-          curl -s -o dist/coi-serviceworker.js https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.js
-          sed -i 's/<head>/<head><script src="coi-serviceworker.js"><\/script>/' dist/index.html
+          # Inject mobile DevTools console (Eruda) and on-screen error banner
+          sed -i 's/<head>/<head><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();window.onerror=function(msg,url,line){alert("CRASH: " + msg + "\\nLine: " + line);};<\/script>/' dist/index.html
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
