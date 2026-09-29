@@ -41,22 +41,72 @@ jobs:
           MAIN_DIR=$(dirname "$MAIN_PATH")
           echo "==> Found main.lua inside: $MAIN_DIR"
 
-          # 3. Disable joystick in conf.lua (prevents mobile browser SDL crash)
+          # 3. Disable joystick in conf.lua
           if [ -f "$MAIN_DIR/conf.lua" ]; then
             sed -i 's/function love.conf(t)/function love.conf(t)\n\tt.modules.joystick = false/' "$MAIN_DIR/conf.lua"
           fi
 
-          # 4. Neutralize 'require "bit"' with a safe stub for WebAssembly
+          # 4. Patch require 'bit' and WebGL Shaders (hologram.fs and CRT.fs)
           python3 -c "
-          p = '$MAIN_PATH'
-          with open(p, 'r', encoding='utf-8', errors='ignore') as f:
-              c = f.read()
-          # Replace require 'bit' with a safe fallback table
-          stub = 'bit = {bxor=function(a,b) return 0 end, band=function(a,b) return 0 end, bor=function(a,b) return 0 end, lshift=function(a,b) return a*(2^b) end, rshift=function(a,b) return math.floor(a/(2^b)) end}; package.loaded[\"bit\"] = bit;'
-          c = c.replace('require \"bit\"', stub).replace(\"require 'bit'\", stub)
-          with open(p, 'w', encoding='utf-8') as f:
-              f.write(c)
-          print('==> Successfully replaced require bit with web stub')
+          import os, re
+
+          main_dir = '$MAIN_DIR'
+
+          # Fix 'bit' module
+          main_file = os.path.join(main_dir, 'main.lua')
+          if os.path.exists(main_file):
+              with open(main_file, 'r', encoding='utf-8', errors='ignore') as f:
+                  c = f.read()
+              stub = 'bit = {bxor=function(a,b) return 0 end, band=function(a,b) return 0 end, bor=function(a,b) return 0 end, lshift=function(a,b) return a*(2^b) end, rshift=function(a,b) return math.floor(a/(2^b)) end}; package.loaded[\"bit\"] = bit;'
+              c = c.replace('require \"bit\"', stub).replace(\"require 'bit'\", stub)
+              with open(main_file, 'w', encoding='utf-8') as f:
+                  f.write(c)
+
+          # Fix hologram.fs non-constant loop and missing newline
+          holo_file = os.path.join(main_dir, 'resources/shaders/hologram.fs')
+          if os.path.exists(holo_file):
+              with open(holo_file, 'r', encoding='utf-8', errors='ignore') as f:
+                  h = f.read()
+              pat_holo = r'for\s*\(\s*int\s+i\s*=\s*-glow_samples;.*?glow\s*\+\s*_a;\s*\}\s*\}\s*\}'
+              rep_holo = '''for (int i = 0; i <= 8; ++i) {
+                      for (int j = 0; j <= 8; ++j) {
+                          float fi = float(i - 4);
+                          float fj = float(j - 4);
+                          _a = Texel( texture, texture_coords + (glow_dist)*vec2(fi, fj)).a;
+                          if (_a < 0.9) {
+                              actual_glow_samples += 1;
+                              glow = glow + _a;
+                          }
+                      }
+                  }'''
+              h = re.sub(pat_holo, rep_holo, h, flags=re.DOTALL)
+              if not h.endswith('\n'): h += '\n'
+              with open(holo_file, 'w', encoding='utf-8') as f:
+                  f.write(h)
+              print('==> Patched hologram.fs loop for WebGL')
+
+          # Fix CRT.fs loop for WebGL
+          crt_file = os.path.join(main_dir, 'resources/shaders/CRT.fs')
+          if os.path.exists(crt_file):
+              with open(crt_file, 'r', encoding='utf-8', errors='ignore') as f:
+                  crt = f.read()
+              pat_crt = r'for\s*\(\s*int\s+i\s*=\s*-BLOOM_AMT;.*?float\(BLOOM_AMT\+BLOOM_AMT\)\);\s*\}'
+              rep_crt = '''for (int i = 0; i <= 6; ++i) {
+                      for (int j = 0; j <= 6; ++j) {
+                          float fi = float(i - 3);
+                          float fj = float(j - 3);
+                          samp = Texel( tex, tc + (bloom_dist/3.0)*vec2(fi, fj));
+                          samp.r = max(1./(1.-cutoff)*samp.r - 1./(1.-cutoff) + 1., 0.);
+                          samp.g = max(1./(1.-cutoff)*samp.g - 1./(1.-cutoff) + 1., 0.);
+                          samp.b = max(1./(1.-cutoff)*samp.b - 1./(1.-cutoff) + 1., 0.);
+                          col += min(min(samp.r,samp.g),samp.b) * (2. - abs(fi+fj)/6.0);
+                      }
+                  }'''
+              crt = re.sub(pat_crt, rep_crt, crt, flags=re.DOTALL)
+              if not crt.endswith('\n'): crt += '\n'
+              with open(crt_file, 'w', encoding='utf-8') as f:
+                  f.write(crt)
+              print('==> Patched CRT.fs loop for WebGL')
           "
 
           # 5. Repack game.love cleanly with main.lua at the root
@@ -71,7 +121,7 @@ jobs:
           # Mobile viewport scaling
           sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">/' dist/index.html
 
-          # Mobile DevTools console + cache buster to clear stale game.data
+          # Bust browser IndexedDB cache & inject DevTools console
           sed -i 's/<head>/<head><script src="https:\/\/cdn.jsdelivr.net\/npm\/eruda"><\/script><script>eruda.init();if(window.indexedDB){indexedDB.deleteDatabase("\/home\/web_user\/love");}<\/script>/' dist/index.html
 
       - name: Upload Pages Artifact
