@@ -1,0 +1,53 @@
+name: Deploy Balatro Web
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Compile Love2D to WebAssembly
+        run: |
+          npm install -g love.js
+          # Allocate 128MB heap (-m 134217728) in compatibility mode (-c)
+          love.js -t "Balatro" -m 134217728 -c game.love dist
+
+          # Inject mobile viewport so the game scales cleanly on phone screens
+          sed -i 's/<head>/<head><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">/' dist/index.html
+
+          # Service worker for caching & offline support
+          curl -s -o dist/coi-serviceworker.js https://raw.githubusercontent.com/gzuidhof/coi-serviceworker/master/coi-serviceworker.js
+          sed -i 's/<head>/<head><script src="coi-serviceworker.js"><\/script>/' dist/index.html
+
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'dist'
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
